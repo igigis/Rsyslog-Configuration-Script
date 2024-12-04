@@ -1,89 +1,183 @@
-# Rsyslog Configuration Script
+# Rsyslog MITRE ATT&CK Mapping Setup
 
-This repository contains a bash script that automates the configuration of rsyslog on Ubuntu systems. The script sets up custom log files and forwards logs to a remote syslog server.
+This script automates the installation and configuration of rsyslog with MITRE ATT&CK framework mapping for enhanced security logging and monitoring capabilities on Ubuntu systems.
+
+## Features
+
+- Automated rsyslog installation
+- MITRE ATT&CK framework integration
+- Remote syslog forwarding
+- Secure default permissions
+- Backup of original configuration
+- Interactive IP address validation
+- Comprehensive error checking
+
+## MITRE ATT&CK Techniques Covered
+
+The configuration includes mapping for the following MITRE ATT&CK techniques:
+
+- T1046 - Network Service Scanning
+- T1059 - Command and Scripting Interpreter
+- T1082 - System Information Discovery
+- T1078 - Valid Accounts
+- T1087 - Account Discovery
+- T1098 - Account Manipulation
+- T1105 - Ingress Tool Transfer
+- T1136 - Create Account
+- T1543 - Create or Modify System Process
+- T1553 - Subvert Trust Controls
+- T1070 - Indicator Removal on Host
+- T1561.001 - Disk Wipe: Disk Structure Wipe
+- T1562 - Impair Defenses
+- T1569 - System Services
 
 ## Prerequisites
 
-Before running the script, ensure you have the following installed on your Ubuntu system:
+- Ubuntu Linux system
+- Root or sudo privileges
+- Network connectivity to the target syslog server
 
-1. rsyslog
-2. auditd
+## Installation
 
-### Installing rsyslog and auditd
-
-To install rsyslog and auditd on Ubuntu, run the following commands:
-
-```bash
-sudo apt update
-sudo apt install rsyslog auditd audispd-plugins -y
-```
-
-After installation, start and enable the services:
-
-```bash
-sudo systemctl start rsyslog
-sudo systemctl enable rsyslog
-sudo systemctl start auditd
-sudo systemctl enable auditd
-```
-
-## Usage
-
-1. Clone this repository or download the script file.
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/yourusername/rsyslog-mitre-setup.git
+   cd rsyslog-mitre-setup
+   ```
 
 2. Make the script executable:
    ```bash
-   chmod +x rsyslog_config.sh
+   chmod +x setup_rsyslog.sh
    ```
 
-3. Run the script with sudo privileges:
+3. Run the script with sudo:
    ```bash
-   sudo ./rsyslog_config.sh
+   sudo ./setup_rsyslog.sh
    ```
 
 4. When prompted, enter the IP address of your syslog server.
 
-5. The script will perform the following actions:
-   - Backup the original rsyslog configuration
-   - Create custom log files
-   - Generate a new rsyslog configuration with custom rules
-   - Restart the rsyslog service
+## Configuration Details
 
-## Features
+The script sets up the following:
 
-- Configures rsyslog to forward logs to a remote syslog server
-- Creates custom log files for various services and events
-- Sets up log forwarding for security-related events
-- Configures logging for common services like Apache, Nginx, MySQL, and more
-- Implements best practices for log management and security event monitoring
+- Creates `/var/log/mitre_mapped.log` for MITRE-mapped events
+- Configures remote forwarding to your specified syslog server
+- Sets appropriate file permissions (640 for logs, 644 for config)
+- Enables standard system logging
+- Configures MITRE ATT&CK mapping rules
+- Enables and starts the rsyslog service
 
-## Customization
+### Log Files
 
-You can modify the script to add or remove custom log files and rules according to your specific requirements. Edit the script before running it to make any necessary changes.
+- `/var/log/mitre_mapped.log` - MITRE ATT&CK mapped events
+- `/var/log/secure` - Authentication and authorization logs
+- `/var/log/maillog` - Mail server logs
+- `/var/log/cron` - Cron job logs
+- `/var/log/messages` - General system messages
 
 ## Troubleshooting
 
-If you encounter any issues:
+### Common Issues and Solutions
 
-1. Check the rsyslog status:
+1. **Rsyslog Service Won't Start**
    ```bash
-   sudo systemctl status rsyslog
+   # Check service status
+   systemctl status rsyslog
+   
+   # Check logs for errors
+   journalctl -xe | grep rsyslog
+   
+   # Verify configuration syntax
+   rsyslogd -N1
    ```
 
-2. View the rsyslog log for any error messages:
+2. **Logs Not Being Generated**
+   - Check file permissions:
+     ```bash
+     ls -l /var/log/mitre_mapped.log
+     ```
+   - Verify syslog user has write permissions:
+     ```bash
+     sudo chown syslog:adm /var/log/mitre_mapped.log
+     sudo chmod 640 /var/log/mitre_mapped.log
+     ```
+
+3. **Remote Forwarding Not Working**
+   - Verify network connectivity:
+     ```bash
+     nc -vz <syslog_server_ip> 514
+     ```
+   - Check firewall rules:
+     ```bash
+     sudo ufw status
+     # If needed, allow UDP 514:
+     sudo ufw allow 514/udp
+     ```
+   - Verify remote server configuration:
+     ```bash
+     # On remote server
+     netstat -ulnp | grep 514
+     ```
+
+4. **Performance Issues**
+   - Check system resources:
+     ```bash
+     top
+     df -h /var/log
+     ```
+   - Monitor rsyslog queue:
+     ```bash
+     watch -n 1 'ls -l /var/lib/rsyslog'
+     ```
+
+### Logging Verification
+
+To test the MITRE ATT&CK mapping:
+
+1. Generate test events:
    ```bash
-   sudo tail -f /var/log/syslog
+   # Test network scanning detection
+   nmap localhost
+   
+   # Test account manipulation detection
+   sudo useradd testuser
    ```
 
-3. Verify the configuration file for any syntax errors:
+2. Check the mapped log:
    ```bash
-   sudo rsyslogd -N1
+   sudo tail -f /var/log/mitre_mapped.log
    ```
+
+### Configuration Recovery
+
+If you need to restore the original configuration:
+
+```bash
+sudo cp /etc/rsyslog.conf.backup /etc/rsyslog.conf
+sudo systemctl restart rsyslog
+```
+
+## Security Considerations
+
+- The script sets restrictive file permissions by default
+- Logs are only accessible by the syslog user and admin group
+- Remote forwarding uses UDP port 514 (consider using TCP and TLS in production)
+- Configuration file permissions are set to 644
+- Backup of original configuration is preserved
 
 ## Contributing
 
-Contributions to improve the script or documentation are welcome. Please submit a pull request or open an issue to discuss proposed changes.
+1. Fork the repository
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a new Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Support
+
+For issues and feature requests, please create an issue in the GitHub repository.
