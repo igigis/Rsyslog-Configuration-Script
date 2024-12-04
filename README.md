@@ -41,7 +41,7 @@ The configuration includes mapping for the following MITRE ATT&CK techniques:
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/rsyslog-mitre-setup.git
+   git clone https://github.com/igigis/rsyslog-mitre-setup.git
    cd rsyslog-mitre-setup
    ```
 
