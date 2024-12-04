@@ -1,186 +1,221 @@
 #!/bin/bash
 
-# Prompt for syslog server IP address
-read -p "Enter the syslog server IP address: " SYSLOG_SERVER_IP
-
-# Validate IP address format
-if [[ ! $SYSLOG_SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "Invalid IP address format. Please run the script again with a valid IP."
+# Check if script is run as root
+if [ "$EUID" -ne 0 ]; then 
+    echo "Please run as root or with sudo"
     exit 1
 fi
 
-# Backup the original rsyslog.conf file
-sudo cp /etc/rsyslog.conf /etc/rsyslog.conf.bak
+# Function to validate IP address
+validate_ip() {
+    local ip=$1
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        IFS='.' read -r -a ip_parts <<< "$ip"
+        for part in "${ip_parts[@]}"; do
+            if [ "$part" -gt 255 ] || [ "$part" -lt 0 ]; then
+                return 1
+            fi
+        done
+        return 0
+    else
+        return 1
+    fi
+}
 
-# Create custom log files
-sudo touch /var/log/custom_apache.log /var/log/custom_nginx.log /var/log/custom_mysql.log \
-    /var/log/custom_postgresql.log /var/log/custom_tomcat.log /var/log/custom_ids.log \
-    /var/log/custom_ssh.log /var/log/custom_changes.log /var/log/custom_performance.log \
-    /var/log/custom_network_devices.log /var/log/custom_vpn.log /var/log/custom_ldap.log \
-    /var/log/custom_docker.log /var/log/custom_dns.log /var/log/custom_email.log \
-    /var/log/custom_proxy.log /var/log/custom_ntp.log
+# Prompt for syslog server IP
+while true; do
+    read -p "Enter the syslog server IP address: " syslog_ip
+    if validate_ip "$syslog_ip"; then
+        break
+    else
+        echo "Invalid IP address. Please try again."
+    fi
+done
 
-# Set ownership and permissions for custom log files
-sudo chown syslog:adm /var/log/custom_*
-sudo chmod 640 /var/log/custom_*
+echo "Installing rsyslog..."
+apt-get update
+apt-get install -y rsyslog
 
-# Create a new rsyslog.conf file
-cat << EOF | sudo tee /etc/rsyslog.conf
-# /etc/rsyslog.conf configuration file for rsyslog
-#
-# For more information install rsyslog-doc and see
-# /usr/share/doc/rsyslog-doc/html/configuration/index.html
+# Stop rsyslog service before making changes
+systemctl stop rsyslog
 
-#################
-#### MODULES ####
-#################
-module(load="imuxsock") # provides support for local system logging
-module(load="imklog")   # provides kernel logging support
-#module(load="immark")  # provides --MARK-- message capability
+# Create log file if it doesn't exist
+touch /var/log/mitre_mapped.log
 
-# provides UDP syslog reception
-#module(load="imudp")
-#input(type="imudp" port="514")
+# Set appropriate permissions
+chown syslog:adm /var/log/mitre_mapped.log
+chmod 640 /var/log/mitre_mapped.log
 
-# provides TCP syslog reception
-#module(load="imtcp")
-#input(type="imtcp" port="514")
+# Backup original rsyslog.conf
+cp /etc/rsyslog.conf /etc/rsyslog.conf.backup
 
-###########################
-#### GLOBAL DIRECTIVES ####
-###########################
+# Create new rsyslog configuration
+cat > /etc/rsyslog.conf << 'EOL'
+# rsyslog configuration for MITRE ATT&CK mapping with remote forwarding
 
-# Set the default permissions for all log files.
-\$FileOwner root
-\$FileGroup adm
-\$FileCreateMode 0640
-\$DirCreateMode 0755
-\$Umask 0022
+# Global directives
+global(workDirectory="/var/lib/rsyslog")
 
-# Where to place spool and state files
-\$WorkDirectory /var/spool/rsyslog
+# Load base modules
+module(load="imuxsock")    # Local system logging support
+module(load="imklog")      # Kernel logging support
 
-# Include all config files in /etc/rsyslog.d/
-\$IncludeConfig /etc/rsyslog.d/*.conf
-
-# Define the RFC5424 template
-template(name="RFC5424" type="string"
-    string="<%pri%>1 %timestamp:::date-rfc3339% %hostname% %app-name% %procid% %msgid% %structured-data% %msg%\n"
+# Define template for RFC5424
+template(name="RFC5424-MITRE" type="string" 
+    string="<%PRI%>1 %TIMESTAMP:::date-rfc3339% %HOSTNAME% %APP-NAME% %PROCID% %MSGID% [technique=\"%$!mitre_technique%\" tactic=\"%$!mitre_tactic%\"] %msg%\n"
 )
 
-###############
-#### RULES ####
-###############
+# Rule set for MITRE ATT&CK mapping
+ruleset(name="mitre_mapping") {
+    # T1046 - Network Service Scanning
+    if re_match($msg, '^.*nmap.*$') or re_match($msg, '^.*netcat.*$') or re_match($msg, '^.*nc -.*$') or re_match($msg, '^.*port.*scan.*$') then {
+        set $!mitre_technique = "T1046";
+        set $!mitre_tactic = "Discovery";
+    }
+	
+    # T1059 - Command and Scripting Interpreter
+    else if re_match($msg, '^.*python.*$') or re_match($msg, '^.*perl.*$') or re_match($msg, '^.*bash -c.*$') then {
+        set $!mitre_technique = "T1059";
+        set $!mitre_tactic = "Execution";
+    }
+	
+    # T1082 - System Information Discovery
+    else if re_match($msg, '^.*uname -a.*$') or re_match($msg, '^.*systeminfo.*$') or re_match($msg, '^.*hostnamectl.*$') or re_match($msg, '^.*lscpu.*$') then {
+        set $!mitre_technique = "T1082";
+        set $!mitre_tactic = "Discovery";
+    }
+	
+    # T1078 - Valid Accounts
+    else if re_match($msg, '^.*Failed password.*$') or re_match($msg, '^.*authentication failure.*$') or re_match($msg, '^.*invalid user.*$') then {
+        set $!mitre_technique = "T1078";
+        set $!mitre_tactic = "Initial Access";
+    }
+    
+    # T1087 - Account Discovery
+    else if re_match($msg, '^.*/etc/passwd$') or re_match($msg, '^.*getent.*$') or re_match($msg, '^.*printenv.*$') or re_match($msg, '^.*compgen -u.*$') then {
+        set $!mitre_technique = "T1087";
+        set $!mitre_tactic = "Discovery";
+    }
+    
+    # T1098 - Account Manipulation
+    else if re_match($msg, '^.*usermod.*$') or re_match($msg, '^.*adduser.*$') or re_match($msg, '^.*groupadd.*$') or re_match($msg, '^.*chmod.*$') or re_match($msg, '^.*chown.*$') then {
+        set $!mitre_technique = "T1098";
+        set $!mitre_tactic = "Persistence";
+    }
+	
+    # T1105 - Ingress Tool Transfer
+    else if re_match($msg, '^.*wget.*$') or re_match($msg, '^.*curl.*$') or re_match($msg, '^.*scp.*$') or re_match($msg, '^.*sftp.*$') then {
+        set $!mitre_technique = "T1105";
+        set $!mitre_tactic = "Command and Control";
+    }
+	
+    # T1136 - Create Account
+    else if re_match($msg, '^.*adduser.*$') or re_match($msg, '^.*net user /add.*$') or re_match($msg, '^.*useradd.*$') then {
+        set $!mitre_technique = "T1136";
+        set $!mitre_tactic = "Persistence";
+    }
+	
+    # T1543 - Create or Modify System Process
+    else if re_match($msg, '^.*systemctl.*start.*$') or re_match($msg, '^.*service.*start.*$') or re_match($msg, '^.*/etc/init.d/.*$') then {
+        set $!mitre_technique = "T1543";
+        set $!mitre_tactic = "Persistence,Privilege Escalation";
+    }
+    
+    # T1553 - Subvert Trust Controls
+    else if re_match($msg, '^.*cert.*add.*$') or re_match($msg, '^.*trust.*anchor.*$') or re_match($msg, '^.*update-ca-certificates.*$') then {
+        set $!mitre_technique = "T1553";
+        set $!mitre_tactic = "Defense Evasion";
+    }
+    
+    # T1070 - Indicator Removal on Host
+    else if re_match($msg, '^.*history -c.*$') or re_match($msg, '^.*rm.*bash_history.*$') or re_match($msg, '^.*truncate.*log.*$') then {
+        set $!mitre_technique = "T1070";
+        set $!mitre_tactic = "Defense Evasion";
+    }
+	
+    # T1561.001 - Disk Wipe: Disk Structure Wipe
+    else if re_match($msg, '^.*dd.*if=/dev/zero.*$') or re_match($msg, '^.*shred.*$') or re_match($msg, '^.*fdisk.*delete.*$') or re_match($msg, '^.*mkfs.*$') then {
+        set $!mitre_technique = "T1561.001";
+        set $!mitre_tactic = "Impact";
+    }
+	
+    # T1562 - Impair Defenses
+    else if re_match($msg, '^.*setenforce 0.*$') or re_match($msg, '^.*systemctl stop firewalld.*$') or re_match($msg, '^.*ufw disable.*$') then {
+        set $!mitre_technique = "T1562";
+        set $!mitre_tactic = "Defense Evasion";
+    }
+	
+    # T1569 - System Services
+    else if re_match($msg, '^.*sc.*create.*$') or re_match($msg, '^.*new-service.*$') or re_match($msg, '^.*systemctl.*enable.*$') then {
+        set $!mitre_technique = "T1569";
+        set $!mitre_tactic = "Execution";
+    }
+	
+    # Default case - if no matches
+    else {
+        set $!mitre_technique = " ";
+        set $!mitre_tactic = " ";
+    }
+}
 
-# Log anything besides private authentication messages to a single log file
-*.*;auth,authpriv.none          -/var/log/syslog
+# Apply MITRE mapping ruleset
+*.* call mitre_mapping
 
-# Log commonly used facilities to their own log file
-auth,authpriv.*                 /var/log/auth.log
-cron.*                          -/var/log/cron.log
-kern.*                          -/var/log/kern.log
-mail.*                          -/var/log/mail.log
-user.*                          -/var/log/user.log
+# Forward to remote syslog using built-in forward action
+action(
+    type="omfwd"
+    target="${syslog_ip}"
+    port="514"
+    protocol="udp"
+    template="RFC5424-MITRE"
+)
 
-# Emergencies are sent to everybody logged in.
-*.emerg                         :omusrmsg:*
+# Local logging with MITRE mapping
+action(
+    type="omfile"
+    file="/var/log/mitre_mapped.log"
+    template="RFC5424-MITRE"
+)
 
-# --- Custom rsyslog configuration for security events ---
-# Authentication and Privilege Escalation (auth logs)
-auth,authpriv.* /var/log/custom_auth.log
-auth,authpriv.* @${SYSLOG_SERVER_IP}:514;RFC5424
+# Standard system logging with corrected syntax
+if ($syslogfacility-text == 'auth' or $syslogfacility-text == 'authpriv') then {
+    action(type="omfile" file="/var/log/secure")
+}
+if ($syslogfacility-text == 'mail') then {
+    action(type="omfile" file="/var/log/maillog")
+}
+if ($syslogfacility-text == 'cron') then {
+    action(type="omfile" file="/var/log/cron")
+}
+if ($syslogfacility-text == 'kern' or $syslogfacility-text == 'user' or $syslogfacility-text == 'daemon') then {
+    action(type="omfile" file="/var/log/messages")
+}
+if ($syslogseverity == '0') then {
+    action(type="omusrmsg" users="*")
+}
+EOL
 
-# Process monitoring (audit logs)
-if \$msg contains "/var/log/audit/audit.log" then /var/log/custom_audit.log
-if \$msg contains "/var/log/audit/audit.log" then @${SYSLOG_SERVER_IP}:514;RFC5424
+# Set permissions for rsyslog.conf
+chmod 644 /etc/rsyslog.conf
 
-# Network and firewall events (UFW and kernel)
-:msg, contains, "[UFW" /var/log/custom_ufw.log
-:msg, contains, "[UFW" @${SYSLOG_SERVER_IP}:514;RFC5424
-kern.* /var/log/custom_kern.log
-kern.* @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# System and Kernel security events (AppArmor, critical events)
-:msg, contains, "apparmor=\"DENIED\"" /var/log/custom_security.log
-:msg, contains, "apparmor=\"DENIED\"" @${SYSLOG_SERVER_IP}:514;RFC5424
-kern.crit /var/log/custom_critical_security.log
-kern.crit @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# --- Additional log types ---
-# Web server logs (Apache and Nginx)
-:programname, isequal, "apache2" /var/log/custom_apache.log
-:programname, isequal, "apache2" @${SYSLOG_SERVER_IP}:514;RFC5424
-:programname, isequal, "nginx" /var/log/custom_nginx.log
-:programname, isequal, "nginx" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Database logs (MySQL and PostgreSQL)
-:programname, isequal, "mysql" /var/log/custom_mysql.log
-:programname, isequal, "mysql" @${SYSLOG_SERVER_IP}:514;RFC5424
-:programname, isequal, "postgresql" /var/log/custom_postgresql.log
-:programname, isequal, "postgresql" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Application server logs (Tomcat)
-:programname, isequal, "tomcat" /var/log/custom_tomcat.log
-:programname, isequal, "tomcat" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Intrusion Detection/Prevention System logs (assuming Snort)
-:programname, isequal, "snort" /var/log/custom_ids.log
-:programname, isequal, "snort" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# SSH access logs
-:msg, contains, "sshd" /var/log/custom_ssh.log
-:msg, contains, "sshd" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Configuration changes
-:msg, contains, "changed" /var/log/custom_changes.log
-:msg, contains, "changed" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Performance logs (CPU, memory, disk)
-:msg, contains, "CPU usage" /var/log/custom_performance.log
-:msg, contains, "CPU usage" @${SYSLOG_SERVER_IP}:514;RFC5424
-:msg, contains, "memory usage" /var/log/custom_performance.log
-:msg, contains, "memory usage" @${SYSLOG_SERVER_IP}:514;RFC5424
-:msg, contains, "disk usage" /var/log/custom_performance.log
-:msg, contains, "disk usage" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Network device logs (assuming syslog messages from network devices)
-:msg, contains, "router" /var/log/custom_network_devices.log
-:msg, contains, "router" @${SYSLOG_SERVER_IP}:514;RFC5424
-:msg, contains, "switch" /var/log/custom_network_devices.log
-:msg, contains, "switch" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# VPN logs
-:programname, isequal, "openvpn" /var/log/custom_vpn.log
-:programname, isequal, "openvpn" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# LDAP/Active Directory logs (assuming syslog messages from LDAP server)
-:msg, contains, "LDAP" /var/log/custom_ldap.log
-:msg, contains, "LDAP" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Container logs (Docker)
-:programname, isequal, "docker" /var/log/custom_docker.log
-:programname, isequal, "docker" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# DNS Server logs
-:programname, isequal, "named" /var/log/custom_dns.log
-:programname, isequal, "named" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Email server logs (assuming Postfix)
-:programname, isequal, "postfix" /var/log/custom_email.log
-:programname, isequal, "postfix" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Proxy server logs (assuming Squid)
-:programname, isequal, "squid" /var/log/custom_proxy.log
-:programname, isequal, "squid" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# Time synchronization logs (NTP)
-:programname, isequal, "ntpd" /var/log/custom_ntp.log
-:programname, isequal, "ntpd" @${SYSLOG_SERVER_IP}:514;RFC5424
-
-# --- End of custom rsyslog configuration ---
-EOF
+# Create rsyslog directory if it doesn't exist
+mkdir -p /var/lib/rsyslog
+chown syslog:adm /var/lib/rsyslog
 
 # Restart rsyslog service
-sudo systemctl restart rsyslog
+systemctl restart rsyslog
 
-echo "rsyslog configuration updated with syslog server IP ${SYSLOG_SERVER_IP} and service restarted."
+# Enable rsyslog to start on boot
+systemctl enable rsyslog
+
+echo "Installation and configuration completed successfully!"
+echo "Syslog server IP configured as: $syslog_ip"
+echo "Log file location: /var/log/mitre_mapped.log"
+echo "Original configuration backed up at: /etc/rsyslog.conf.backup"
+
+# Check if rsyslog is running
+if systemctl is-active --quiet rsyslog; then
+    echo "Rsyslog service is running"
+else
+    echo "Warning: Rsyslog service is not running. Please check the logs with 'journalctl -xe'"
+fi
