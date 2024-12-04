@@ -47,12 +47,12 @@ The configuration includes mapping for the following MITRE ATT&CK techniques:
 
 2. Make the script executable:
    ```bash
-   chmod +x setup_rsyslog.sh
+   chmod +x rsyslog_config.sh
    ```
 
 3. Run the script with sudo:
    ```bash
-   sudo ./setup_rsyslog.sh
+   sudo ./rsyslog_config.sh
    ```
 
 4. When prompted, enter the IP address of your syslog server.
